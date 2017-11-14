@@ -36,15 +36,19 @@ apply(train, 2, function(x)
   na_summary(x)) %>% unlist() %>%
   matrix(byrow = T, ncol = 2) %>%
   as.data.frame(row.names = names(train)) %>%
-  `names<-`(c('count_na', 'Percent_na')) 
+  `names<-`(c('count_na', 'Percent_na'))
 
-apply(train %>% select(contains("_ind")), 2, function(x)
+apply(train %>% select(contains("_reg")), 2, function(x)
   na_summary(x)) %>% unlist() %>%
   matrix(byrow = T, ncol = 2) %>%
-  as.data.frame(row.names = names(train %>% select(contains("_ind")))) %>%
-  `names<-`(c('count_na', 'Percent_na')) 
+  as.data.frame(row.names = names(train %>% select(contains("_reg")))) %>%
+  `names<-`(c('count_na', 'Percent_na'))
 
-corrplot(cor(na.omit(train %>% select(contains("_ind"), target))), 
+corrplot(cor(na.omit(train %>% select(contains("_reg"), target))),
+         type="lower", method="color",
+         col=brewer.pal(n=8, name="RdBu"),diag=FALSE)
+
+corrplot(cor(na.omit(train)),
          type="lower", method="color",
          col=brewer.pal(n=8, name="RdBu"),diag=FALSE)
 
@@ -61,21 +65,21 @@ lines(train$ps_car_12[pred_na_car_14$ids], pred_na_car_14$values, col = "red")
 
 ################################################################
 # Test
-apply(test, 2, function(x)
-  na_summary(x)) %>% unlist() %>%
-  matrix(byrow = T, ncol = 2) %>%
-  as.data.frame(row.names = names(test)) %>%
-  `names<-`(c('count_na', 'Percent_na')) 
-
-apply(test %>% select(contains("_car")), 2, function(x)
-  na_summary(x)) %>% unlist() %>%
-  matrix(byrow = T, ncol = 2) %>%
-  as.data.frame(row.names = names(test %>% select(contains("_car")))) %>%
-  `names<-`(c('count_na', 'Percent_na')) 
-
-corrplot(cor(na.omit(test %>% select(contains("_car")))), 
-         type="lower", method="color",
-         col=brewer.pal(n=8, name="RdBu"),diag=FALSE)
+# apply(test, 2, function(x)
+#   na_summary(x)) %>% unlist() %>%
+#   matrix(byrow = T, ncol = 2) %>%
+#   as.data.frame(row.names = names(test)) %>%
+#   `names<-`(c('count_na', 'Percent_na')) 
+# 
+# apply(test %>% select(contains("_car")), 2, function(x)
+#   na_summary(x)) %>% unlist() %>%
+#   matrix(byrow = T, ncol = 2) %>%
+#   as.data.frame(row.names = names(test %>% select(contains("_car")))) %>%
+#   `names<-`(c('count_na', 'Percent_na')) 
+# 
+# corrplot(cor(na.omit(test %>% select(contains("_car")))), 
+#          type="lower", method="color",
+#          col=brewer.pal(n=8, name="RdBu"),diag=FALSE)
 
 pred_na_reg_03 = predictNAfromLM(test, "ps_reg_02", "ps_reg_03")
 test$ps_reg_03[pred_na_reg_03$ids] = pred_na_reg_03$values
@@ -92,12 +96,12 @@ getmode <- function(x) {
 
 train <- train %>% 
   mutate_at(vars(ends_with("_cat")), funs(factor)) %>%
-  mutate_at(vars(ends_with("bin")), funs(as.logical)) %>%
+  mutate_at(vars(ends_with("bin")), funs(factor)) %>%
   mutate(target = as.factor(target))
 
 test <- test %>%
   mutate_at(vars(ends_with("cat")), funs(factor)) %>%
-  mutate_at(vars(ends_with("bin")), funs(as.logical))
+  mutate_at(vars(ends_with("bin")), funs(factor))
 
 trn_cln = train
 test_cln = test
@@ -147,6 +151,14 @@ for(i in 1:length(na_cols_test)) {
 trn_cln$id <- NULL
 test_cln$id <- NULL
 
+############################################################
+#Over Sampling
+# trn_target_1 = trn_cln[trn_cln$target == 1,]
+# trn_target_1_sampled = do.call(rbind, replicate(15, trn_target_1, simplify=FALSE))
+# trn_cln = rbind(trn_cln, trn_target_1_sampled)
+
+############################################################
+
 set.seed(1)
 splitIndex <- createDataPartition(trn_cln$target, p = .70, list = FALSE, times = 1)
 
@@ -156,13 +168,20 @@ prop.table(table(cv_train$target))
 prop.table(table(cv_test$target))
 
 #not using currently
+# cv_train$target <- as.factor(cv_train$target)
 cv_train$target <- as.factor(cv_train$target)
-cv_train <- SMOTE(target ~ ., cv_train, perc.over = 100, perc.under=200)
-cv_train$target <- as.numeric(cv_train$target)
+cv_train_temp1 <- SMOTE(target ~ ., cv_train, perc.over = 100, perc.under=200)
+cv_train = cv_train_temp1
+
+# cv_train$target <- as.numeric(cv_train$target)
 
 #===============
 
-cv_train$target = as.factor(cv_train$target)
+
+cv_train <- cv_train %>% 
+  mutate_at(vars(ends_with("_cat")), funs(factor)) %>%
+  mutate_at(vars(ends_with("bin")), funs(as.logical))
+
 naive_fit = naive_bayes(target ~ ., data = cv_train)
 cv_test$target = as.factor(cv_test$target)
 
@@ -176,4 +195,20 @@ table(cv_test$target, pred_target_train)
 pred_test = predict(naive_fit, test_cln, type = "prob")
 
 f = cbind(test[,1], round(pred_test[,2], 4))
-write.csv(f, file = "sub.csv")
+write.csv(f, file = "sub.csv", row.names = FALSE)
+
+#################################
+#Sample xgboost
+cv_train$target = as.numeric(cv_train$target)
+cv_test$target = as.numeric(cv_test$target)
+cv_train$target[cv_train$target == 1] = 0
+cv_train$target[cv_train$target == 2] = 1
+cv_test$target[cv_test$target == 1] = 0
+cv_test$target[cv_test$target == 2] = 1
+bst <- xgboost(data = as.matrix(cv_train[,-1]), label = cv_train$target, max_depth = 2,
+               eta = 0.5, nthread = 2, nrounds = 12, objective = "binary:logistic")
+# use all trees by default
+pred <- predict(bst, as.matrix(cv_test[,-1]))
+
+Gini(pred, cv_test$target)
+
