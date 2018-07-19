@@ -1,105 +1,86 @@
-library(data.table)
-library(dplyr)
-library(tidyr)
-library(caret)
-library(DMwR)
-library(naivebayes)
-library(RColorBrewer)
-library(corrplot)
-library(reldist)
-library(MLmetrics)
-library(mlr)
-library(xgboost)
-library(onehot)
-library(verification)
-library(glmnet)
+source("utils.R")
 
+#Imports packages and installs if not found
+ipak <- function(pkg){
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg)) 
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+}
+
+packages <- c("data.table", "dplyr", "tidyr", "caret", "DMwR", 
+              "naivebayes", "RColorBrewer", "corrplot","reldist", 
+              "MLmetrics", "mlr", "xgboost", "onehot", "verification", "glmnet")
+ipak(packages)
+
+
+#Data Processing===========================================================
 train = as.data.frame(fread("data/train.csv", na.strings = c("-1", "-1.0")))
 test = as.data.frame(fread("data/test.csv", na.strings = c("-1", "-1.0")))
 
-################################################################
-getmode <- function(x) {
-  uniqx <- unique(x)
-  uniqx[which.max(tabulate(match(x, uniqx)))]
-}
+train$id <- NULL
+train$ps_car_03_cat <- NULL
+train$ps_car_05_cat <- NULL
+test$id <- NULL
+test$ps_car_03_cat <- NULL
+test$ps_car_05_cat <- NULL
 
-trn_cln = train
-test_cln = test
+na_cols_train = which(colSums(is.na(train)) >0)
+na_cols_test = which(colSums(is.na(test)) >0)
 
-trn_cln$ps_car_03_cat <- NULL
-trn_cln$ps_car_05_cat <- NULL
-test_cln$ps_car_03_cat <- NULL
-test_cln$ps_car_05_cat <- NULL
-
-na_cols_train = which(colSums(is.na(trn_cln)) >0)
-na_cols_test = which(colSums(is.na(test_cln)) >0)
-
-for(i in 1:length(na_cols_train)) {
-  name = names(na_cols_train)[i]
-  value = na_cols_train[i]
-  cat(name, "\n")
+#Imputing missing data in train
+for(name in na_cols_train) {
   if(grepl("_cat", name)) {
-    cat(na_cols_train[i], "is a category \n")
-    ids = which(is.na(trn_cln[, value]))
-    # v = getmode(na.omit(trn_cln[, value]))
-    # v = median(na.omit(trn_cln[, value]))
-    trn_cln[ids, value] = -1
+    cat(name, "is a category \n")
+    ids = which(is.na(train[, name]))
+    # v = getmode(na.omit(train[, name]))
+    # v = median(na.omit(train[, name]))
+    train[ids, name] = -1
   } else {
-    cat(na_cols_train[i], "is a regular \n")
-    ids = which(is.na(trn_cln[, value]))
-    v = mean(trn_cln[, value], na.rm = TRUE)
-    # v = median(trn_cln[, value], na.rm = TRUE)
-    trn_cln[ids, value] = v
+    cat(name, "is a regular \n")
+    ids = which(is.na(train[, name]))
+    v = mean(train[, name], na.rm = TRUE)
+    # v = median(train[, name], na.rm = TRUE)
+    train[ids, name] = v
   }
 }
 
-for(i in 1:length(na_cols_test)) {
-  name = names(na_cols_test)[i]
-  value = na_cols_test[i]
-  cat(name, "\n")
+#Imputing missing data in test
+for(name in na_cols_test) {
   if(grepl("_cat", name)) {
-    cat(na_cols_test[i], "is a category \n")
-    ids = which(is.na(test_cln[, value]))
-    # v = getmode(na.omit(test_cln[, value]))
-    # v = median(na.omit(test_cln[, value]))
-    test_cln[ids, value] = -1
+    cat(name, "is a category \n")
+    ids = which(is.na(test[, name]))
+    # v = getmode(na.omit(test[, name]))
+    # v = median(na.omit(test[, name]))
+    test[ids, name] = -1
   } else {
-    cat(na_cols_test[i], "is a regular \n")
-    ids = which(is.na(test_cln[, value]))
-    v = mean(test_cln[, value], na.rm = TRUE)
-    # v = median(test_cln[, value], na.rm = TRUE)
-    test_cln[ids, value] = v
+    cat(name, "is a regular \n")
+    ids = which(is.na(test[, name]))
+    v = mean(test[, name], na.rm = TRUE)
+    # v = median(test[, name], na.rm = TRUE)
+    test[ids, name] = v
   }
 }
 
-trn_cln$id <- NULL
-test_cln$id <- NULL
+#making sure that all categorical variables are factors
+train <- train %>% mutate_at(vars(ends_with("_cat")), funs(factor))
+test <- test %>% mutate_at(vars(ends_with("_cat")), funs(factor))
 
-tmp_trn = trn_cln
-tmp_test = test_cln
+#Converting factors to onehot
+train = as.data.frame(predict(onehot(train, max_levels = 200), train))
+test = as.data.frame(predict(onehot(test, max_levels = 200), test))
 
-trn_cln <- trn_cln %>%
-  mutate_at(vars(ends_with("_cat")), funs(factor))
 
-test_cln <- test_cln %>%
-  mutate_at(vars(ends_with("_cat")), funs(factor))
-
-train_oh = predict(onehot(trn_cln, max_levels = 200), trn_cln)
-test_oh = predict(onehot(test_cln, max_levels = 200), test_cln)
-
-trn_cln = as.data.frame(train_oh)
-test_cln = as.data.frame(test_oh)
-
-############################################################
-
+#Data Partitioning===========================================================
 set.seed(1)
-splitIndex <- createDataPartition(trn_cln$target, p = .70, list = FALSE, times = 1)
+splitIndex <- createDataPartition(train$target, p = .70, list = FALSE, times = 1)
 
-cv_train = trn_cln[splitIndex, ]
-cv_test = trn_cln[-splitIndex, ]
+cv_train = train[splitIndex, ]
+cv_test = train[-splitIndex, ]
 prop.table(table(cv_train$target))
 prop.table(table(cv_test$target))
 
+#Finding linear dependencies and removing them
 lin_comb <- findLinearCombos(cv_train)
 d <- setdiff(seq(1:ncol(cv_train)), lin_comb$remove)
 cv_train = cv_train[, d]
@@ -107,8 +88,8 @@ cv_train = cv_train[, setdiff(names(cv_train), "ps_ind_02_cat=4")]
 cv_test = cv_test[, d]
 cv_test = cv_test[, setdiff(names(cv_test), "ps_ind_02_cat=4")]
 
-#==========================================
-#GLM model
+
+#GLM model===========================================================
 logmod <- glm(target ~ ., data = cv_train, family = binomial(link = 'logit'))
 preds_cat_na_allcol_lmna <- predict(logmod, newdata = cv_test[,-1], type = "response")
 Gini(preds_cat_na_allcol_lmna, cv_test$target)
@@ -120,10 +101,10 @@ roc.plot(
   plot.thres = c(0.03, 0.05, 0.1))
 
 #predicting probabilities over test data
-preds_test <- predict(logmod, newdata = test_cln, type = "response")
+preds_test <- predict(logmod, newdata = test, type = "response")
 
-#==========================================
-#GLM CV model
+
+#GLM CV model===========================================================
 fit.cv <- cv.glmnet(y = as.matrix(cv_train$target), 
                     x = as.matrix(cv_train[,setdiff(names(cv_train), "target")]), family="binomial", type.measure = "auc")
 cv_test_temp = cv_test
@@ -135,10 +116,10 @@ Gini(p1, cv_test_temp$target)
 Gini(p2, cv_test_temp$target)
 
 #predicting probabilities over test data
-dim_names = setdiff(names(trn_cln[,d]), "target")
-test_cln = test_cln[, dim_names]
-test_cln = test_cln[, setdiff(names(test_cln), "ps_ind_02_cat=4")]
+dim_names = setdiff(names(train[,d]), "target")
+test = test[, dim_names]
+test = test[, setdiff(names(test), "ps_ind_02_cat=4")]
 
-preds_test_cv = predict(fit.cv, newx = data.matrix(test_cln), s="lambda.min", type = "response")
+preds_test_cv = predict(fit.cv, newx = data.matrix(test), s="lambda.min", type = "response")
 f = cbind(test[,1], preds_test_cv)
 write.csv(f, file = "sub.csv", row.names = FALSE)
